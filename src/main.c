@@ -2,7 +2,7 @@
  * SmartSensors_loadcelldemo.c
  *
  * Created: 3/21/2022 5:34:21 PM
- *  Author: bakker
+ *  Author: Mike & Joost
  */ 
 
 #define F_CPU				32000000UL
