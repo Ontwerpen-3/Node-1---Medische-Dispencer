@@ -13,6 +13,7 @@
 #define CHANNELS_AVERAGED	4U
 #define AVERAGING_GAIN		((uint32_t) SAMPLES_AVERAGED * CHANNELS_AVERAGED)
 
+/* Theoretical values kept, but final displayed grams use calibration below */
 #define BRIDGE_DRIVE_V		3.3
 #define BRIDGE_SENS_V_PER_G	(BRIDGE_DRIVE_V * 1e-6)
 #define AMP_GAIN			180
@@ -21,7 +22,12 @@
 #define ADC_V_PER_LSB		(ADC_FS_V / ADC_RANGE_LSB)
 #define GRAM_PER_LSB		(ADC_V_PER_LSB / (BRIDGE_SENS_V_PER_G * AMP_GAIN))
 
+/* Measured calibration values */
+#define ZERO_AVG           1124.672
+#define GRAMS_PER_AVG      0.474
+
 #define BAUD_100K 100000UL
+#define DEBOUNCE_PERIOD_MS 50
 
 /* ===== STEPPER ===== */
 #define STEPPER_PORT PORTA
@@ -55,6 +61,13 @@ static volatile uint8_t sReadPhase, sWritePhase;
 
 volatile uint8_t one_second_flag = 0;
 
+/* Tare */
+static volatile double tare = 0.0;
+static volatile double last_grams = 0.0;
+
+volatile uint8_t button_event = 0;
+volatile uint8_t btn_last = 1, btn_stable = 1, btn_cnt = 0;
+
 /* Half-step sequence */
 uint8_t steps[8] = {
     IN1,
@@ -73,7 +86,7 @@ volatile uint16_t steps_left = 0;
 /* ===== INSTELBARE WAARDES ===== */
 uint16_t rotation_angle = 90;   // graden
 uint16_t wait_time_sec  = 5;    // wachttijd
-uint16_t step_speed     = 900; // steps/sec
+uint16_t step_speed     = 900;  // steps/sec
 
 static void InitAnalogADC(void);
 static void InitAnalogTimer(void);
@@ -87,6 +100,13 @@ void step_motor(void)
 
     step_index++;
     if(step_index >= 8) step_index = 0;
+}
+
+void debounce_timer_init(void)
+{
+    TCE0.PER = 499;                         // 1 ms @ 32 MHz / 64
+    TCE0.INTCTRLA = TC_OVFINTLVL_LO_gc;
+    TCE0.CTRLA = TC_CLKSEL_DIV64_gc;
 }
 
 /* ===== 1 seconde timer → TCD0 (TCC0 is al in gebruik door ADC!) ===== */
@@ -137,6 +157,10 @@ int main(void) {
     PORTD.OUTCLR = PORTD_BRIDGENEG;
     PORTD.DIRSET = PORTD_BRIDGEPOS | PORTD_BRIDGENEG;
 
+    PORTD.DIRCLR = PIN6_bm;
+    PORTD.PIN6CTRL = PORT_OPC_PULLUP_gc;
+    debounce_timer_init();
+
     init_clock();
     init_stream(F_CPU);
     InitAnalogADC();
@@ -170,10 +194,23 @@ int main(void) {
         if(sReadPhase != sWritePhase) {
             int32_t newVal = sAccumulatedSamples;
             sReadPhase = sWritePhase;
-            char buf1[10], buf2[10];
-            dtostrf((double) newVal / AVERAGING_GAIN, 7, 3, buf1);
-            dtostrf(((double) newVal / AVERAGING_GAIN) * GRAM_PER_LSB - 675.9, 7, 3, buf2);
-            printf("%ld -> %s avg -> %s g\n", newVal, buf1, buf2);
+            char buf1[16], buf2[16];
+
+            double average_value = (double)newVal / (double)AVERAGING_GAIN;
+            double gram_average_value = (average_value - ZERO_AVG) * GRAMS_PER_AVG;
+            last_grams = gram_average_value;
+            double gram_tare = gram_average_value - tare;
+
+            dtostrf(average_value, 7, 3, buf1);
+            dtostrf(gram_tare, 7, 3, buf2);
+
+            printf(">raw:%ld,avg:%s,grams:%s\r\n", newVal, buf1, buf2);
+        }
+
+        if (button_event) {
+            button_event = 0;
+            tare = last_grams;
+            printf("\r\nTARE %.3f\r\n", tare);
         }
 
         if(one_second_flag) {
@@ -195,7 +232,6 @@ int main(void) {
         }
     }
 } /* main */
-
 
 static void InitAnalogADC(void) {
 
@@ -233,7 +269,6 @@ static void InitAnalogADC(void) {
 
 } /* InitAnalogADC */
 
-
 static void InitAnalogTimer(void) {
 	
 	TCC0.CTRLB = TC_WGMODE_NORMAL_gc;
@@ -250,6 +285,22 @@ static void InitAnalogTimer(void) {
 	
 } /* InitAnalogTimer */
 
+ISR(TCE0_OVF_vect)
+{
+    uint8_t raw = (PORTD.IN & PIN6_bm) ? 1 : 0;
+
+    if (raw == btn_last) {
+        if (btn_cnt < DEBOUNCE_PERIOD_MS) btn_cnt++;
+    } else {
+        btn_cnt = 0;
+        btn_last = raw;
+    }
+
+    if (btn_cnt == DEBOUNCE_PERIOD_MS && raw != btn_stable) {
+        btn_stable = raw;
+        if (raw == 0) button_event = 1;   // pressed
+    }
+}
 
 ISR(ADCA_CH3_vect) {
 	static int32_t sSampleAccumulator;
@@ -281,7 +332,6 @@ ISR(ADCA_CH3_vect) {
 	}
 	
 } /* ISR(ADCA_CH3_vect) */
-
 
 static uint8_t ReadCalibrationByte(uint8_t index) {
 	uint8_t result;

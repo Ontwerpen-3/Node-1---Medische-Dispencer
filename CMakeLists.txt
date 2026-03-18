@@ -11,4 +11,4 @@
     add_link_options(-lprintf_flt)
 
     # do not change this last line below
-    include(../../generic.cmake)
+    include(../generic.cmake)
