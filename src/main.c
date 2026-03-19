@@ -86,8 +86,8 @@ volatile uint8_t  step_index = 0;
 volatile uint16_t steps_left = 0;
 
 /* ===== INSTELBARE WAARDES ===== */
-uint16_t rotation_angle = 90;   // graden
-uint16_t wait_time_sec  = 5;    // wachttijd
+uint16_t rotation_angle = 75;   // graden
+uint16_t wait_time_sec  = 90;    // wachttijd
 uint16_t step_speed     = 900;  // steps/sec
 
 static void InitAnalogADC(void);
@@ -331,7 +331,6 @@ static uint8_t ReadCalibrationByte(uint8_t index) {
 	
 	return result;
 } /* ReadCalibrationByte */
-
 
 ISR(TCE0_OVF_vect)
 {
