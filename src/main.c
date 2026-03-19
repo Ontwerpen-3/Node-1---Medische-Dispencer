@@ -5,18 +5,20 @@
  *  Author: Mike & Joost
  */ 
 
-#define F_CPU				32000000UL
-#define SAMPLERATE			10000UL
-#define SAMPLERATE_OUT		3UL
-#define TICKS_PER_SAMPLE	(F_CPU / SAMPLERATE)
-#define SAMPLES_AVERAGED	(SAMPLERATE / SAMPLERATE_OUT)
-#define CHANNELS_AVERAGED	4U
-#define AVERAGING_GAIN		((uint32_t) SAMPLES_AVERAGED * CHANNELS_AVERAGED)
+#define F_CPU				32000000UL // Tells the compiler that the microcontroller runs at 32MHZ -- UL Unsigned long 0 to 4294967295 
+#define SAMPLERATE			10000UL // The ADC(analog-to-digital converter) takes 10000 samples per second.
+#define SAMPLERATE_OUT		3UL // Output rate is 3 times per second 
+#define TICKS_PER_SAMPLE	(F_CPU / SAMPLERATE) // 3200 CPU clock ticks between each ADC sample
+#define SAMPLES_AVERAGED	(SAMPLERATE / SAMPLERATE_OUT) // 3333 samples are averaged before printing one value
+#define CHANNELS_AVERAGED	4U // 4 ADC channels are used, All reading the same signal averaged together to reduce the noise
+#define AVERAGING_GAIN		((uint32_t) SAMPLES_AVERAGED * CHANNELS_AVERAGED) // 13332 total number of readings that go into one output value
 
 /* Theoretical values kept, but final displayed grams use calibration below */
-#define BRIDGE_DRIVE_V		3.3
-#define BRIDGE_SENS_V_PER_G	(BRIDGE_DRIVE_V * 1e-6)
-#define AMP_GAIN			180
+#define BRIDGE_DRIVE_V		3.3 //the loadcell is powered by 3.3V
+#define BRIDGE_SENS_V_PER_G	(BRIDGE_DRIVE_V * 2e-6) // the loadcell produces 3.3 uV per gram of weight
+//#define BRIDGE_SENS_V_PER_G	(BRIDGE_DRIVE_V * 1e-6) // the loadcell produces 3.3 uV per gram of weight
+#define AMP_GAIN			1800 //amplifies the loadcell signal by 1800x -- this is from the mcp6022 opamp
+//#define AMP_GAIN			180 //amplifies the loadcell signal by 1800x -- this is from the mcp6022 opamp
 #define ADC_FS_V			(3.3/2)
 #define ADC_RANGE_LSB		2048
 #define ADC_V_PER_LSB		(ADC_FS_V / ADC_RANGE_LSB)
