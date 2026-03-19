@@ -2,33 +2,29 @@
  * SmartSensors_loadcelldemo.c
  *
  * Created: 3/21/2022 5:34:21 PM
- *  Author: Mike & Joost
+ *  Author: bakker
  */ 
 
-#define F_CPU				32000000UL // Tells the compiler that the microcontroller runs at 32MHZ -- UL Unsigned long 0 to 4294967295 
-#define SAMPLERATE			10000UL // The ADC(analog-to-digital converter) takes 10000 samples per second.
-#define SAMPLERATE_OUT		3UL // Output rate is 3 times per second 
-#define TICKS_PER_SAMPLE	(F_CPU / SAMPLERATE) // 3200 CPU clock ticks between each ADC sample
-#define SAMPLES_AVERAGED	(SAMPLERATE / SAMPLERATE_OUT) // 3333 samples are averaged before printing one value
-#define CHANNELS_AVERAGED	4U // 4 ADC channels are used, All reading the same signal averaged together to reduce the noise
-#define AVERAGING_GAIN		((uint32_t) SAMPLES_AVERAGED * CHANNELS_AVERAGED) // 13332 total number of readings that go into one output value
+#define F_CPU				32000000UL
+#define SAMPLERATE			10000UL
+#define SAMPLERATE_OUT		3UL
+#define TICKS_PER_SAMPLE	(F_CPU / SAMPLERATE)
+#define SAMPLES_AVERAGED	(SAMPLERATE / SAMPLERATE_OUT)
+#define CHANNELS_AVERAGED	4U
+#define AVERAGING_GAIN		((uint32_t) SAMPLES_AVERAGED * CHANNELS_AVERAGED)
 
-/* Theoretical values kept, but final displayed grams use calibration below */
-#define BRIDGE_DRIVE_V		3.3 //the loadcell is powered by 3.3V
-#define BRIDGE_SENS_V_PER_G	(BRIDGE_DRIVE_V * 2e-6) // the loadcell produces 3.3 uV per gram of weight
-//#define BRIDGE_SENS_V_PER_G	(BRIDGE_DRIVE_V * 1e-6) // the loadcell produces 3.3 uV per gram of weight
-#define AMP_GAIN			1800 //amplifies the loadcell signal by 1800x -- this is from the mcp6022 opamp
-//#define AMP_GAIN			180 //amplifies the loadcell signal by 1800x -- this is from the mcp6022 opamp
+#define BRIDGE_DRIVE_V		3.3
+#define BRIDGE_SENS_V_PER_G	(BRIDGE_DRIVE_V * 1e-6)
+#define AMP_GAIN			898.25
 #define ADC_FS_V			(3.3/2)
 #define ADC_RANGE_LSB		2048
 #define ADC_V_PER_LSB		(ADC_FS_V / ADC_RANGE_LSB)
 #define GRAM_PER_LSB		(ADC_V_PER_LSB / (BRIDGE_SENS_V_PER_G * AMP_GAIN))
 
-/* Measured calibration values */
-#define ZERO_AVG           1124.672
-#define GRAMS_PER_AVG      0.474
+#define OFFSET 1.23
 
 #define BAUD_100K 100000UL
+
 #define DEBOUNCE_PERIOD_MS 50
 
 /* ===== STEPPER ===== */
@@ -69,6 +65,10 @@ static volatile double last_grams = 0.0;
 
 volatile uint8_t button_event = 0;
 volatile uint8_t btn_last = 1, btn_stable = 1, btn_cnt = 0;
+
+static void InitAnalogADC(void);
+static void InitAnalogTimer(void);
+static uint8_t ReadCalibrationByte(uint8_t index);
 
 /* Half-step sequence */
 uint8_t steps[8] = {
@@ -150,25 +150,28 @@ ISR(TCC1_OVF_vect)
     }
 }
 
+
 int main(void) {
 
+	
     char t[9]  = "HH:MM:SS";
     char d[11] = "DD-MM-YY";
 
-    PORTD.OUTSET = PORTD_BRIDGEPOS;
-    PORTD.OUTCLR = PORTD_BRIDGENEG;
-    PORTD.DIRSET = PORTD_BRIDGEPOS | PORTD_BRIDGENEG;
+	
+	PORTD.OUTSET = PORTD_BRIDGEPOS;
+	PORTD.OUTCLR = PORTD_BRIDGENEG;
+	PORTD.DIRSET = PORTD_BRIDGEPOS | PORTD_BRIDGENEG;
 
-    PORTD.DIRCLR = PIN6_bm;
+	PORTD.DIRCLR = PIN6_bm;
     PORTD.PIN6CTRL = PORT_OPC_PULLUP_gc;
     debounce_timer_init();
+	
+	init_clock();
+	init_stream(F_CPU);
+	InitAnalogADC();
+	InitAnalogTimer();
 
-    init_clock();
-    init_stream(F_CPU);
-    InitAnalogADC();
-    InitAnalogTimer();
-
-    i2c_init(&TWIE, TWI_BAUD(F_CPU, BAUD_100K));
+	    i2c_init(&TWIE, TWI_BAUD(F_CPU, BAUD_100K));
 
     PORTE.DIRCLR = PIN1_bm | PIN0_bm;
     PORTE.PIN0CTRL = PORT_OPC_PULLUP_gc;
@@ -184,7 +187,9 @@ int main(void) {
     stepper_timer_init(step_speed);
 
     PMIC.CTRL |= PMIC_HILVLEN_bm | PMIC_LOLVLEN_bm | PMIC_MEDLVLEN_bm;
-    sei();
+
+	sei();
+	
 
     STEPPER_PORT.DIRSET = STEPPER_MASK;
 
@@ -192,48 +197,48 @@ int main(void) {
 
     uint16_t counter = 0;
 
-    while(1) {
-        if(sReadPhase != sWritePhase) {
-            int32_t newVal = sAccumulatedSamples;
-            sReadPhase = sWritePhase;
-            char buf1[16], buf2[16];
+    while(1)  {
+        if (sReadPhase != sWritePhase)	{
+		/* Busy-wait; normally we do have other things to do */
+		int32_t newVal = sAccumulatedSamples;
+		sReadPhase = sWritePhase;
 
-            double average_value = (double)newVal / (double)AVERAGING_GAIN;
-            double gram_average_value = (average_value - ZERO_AVG) * GRAMS_PER_AVG;
-            last_grams = gram_average_value;
-            double gram_tare = gram_average_value - tare;
+        double avg = (double) newVal / AVERAGING_GAIN;
+		double grams_raw = avg * GRAM_PER_LSB;
+        double grams = (grams_raw - tare) * OFFSET;
 
-            dtostrf(average_value, 7, 3, buf1);
-            dtostrf(gram_tare, 7, 3, buf2);
 
-            printf(">raw:%ld,avg:%s,grams:%s\r\n", newVal, buf1, buf2);
-        }
+		last_grams = grams_raw;
+        
+		char buf_avg[12], buf_grams[12];
+        dtostrf(avg,   7, 3, buf_avg);
+        dtostrf(grams, 7, 3, buf_grams);
 
-        if (button_event) {
-            button_event = 0;
-            tare = last_grams;
-            printf("\r\nTARE %.3f\r\n", tare);
-        }
-
-        if(one_second_flag) {
-            one_second_flag = 0;
-
-            rtc_get_time(&TWIE);
-            rtc_get_date(&TWIE);
-
-            printf("%s  %s\r\n",
-                   rtc_date_to_string(d),
-                   rtc_time_to_string(t));
-
-            counter++;
-
-            if(counter >= wait_time_sec) {
-                counter = 0;
-                steps_left = (uint32_t)rotation_angle * 4096 / 360;
-            }
-        }
+        printf(">raw:%ld,avg:%s,grams:%s\r\n",
+            newVal,
+            buf_avg,
+            buf_grams);
     }
+    if (button_event) {
+        button_event = 0;
+        tare = last_grams;
+        printf("\r\nTARE %.3f\r\n", tare);
+    }	
+	if(one_second_flag) {
+        one_second_flag = 0;
+
+        rtc_get_time(&TWIE);
+        rtc_get_date(&TWIE);
+
+        printf("%s  %s\r\n", rtc_date_to_string(d), rtc_time_to_string(t));
+        counter++;
+            counter = 0;
+            steps_left = (uint32_t)rotation_angle * 4096 / 360;
+        }
+	}	
+
 } /* main */
+
 
 static void InitAnalogADC(void) {
 
@@ -270,7 +275,6 @@ static void InitAnalogADC(void) {
 	PMIC.CTRL |= PMIC_HILVLEN_bm; /* Enable hi-level interrupt (ADC completion) */
 
 } /* InitAnalogADC */
-
 static void InitAnalogTimer(void) {
 	
 	TCC0.CTRLB = TC_WGMODE_NORMAL_gc;
@@ -286,24 +290,6 @@ static void InitAnalogTimer(void) {
 	EVSYS.CH0MUX = EVSYS_CHMUX_TCC0_OVF_gc; /* Connect TCC0 overflow to event channel 0, thus triggering an ADC sweep */
 	
 } /* InitAnalogTimer */
-
-ISR(TCE0_OVF_vect)
-{
-    uint8_t raw = (PORTD.IN & PIN6_bm) ? 1 : 0;
-
-    if (raw == btn_last) {
-        if (btn_cnt < DEBOUNCE_PERIOD_MS) btn_cnt++;
-    } else {
-        btn_cnt = 0;
-        btn_last = raw;
-    }
-
-    if (btn_cnt == DEBOUNCE_PERIOD_MS && raw != btn_stable) {
-        btn_stable = raw;
-        if (raw == 0) button_event = 1;   // pressed
-    }
-}
-
 ISR(ADCA_CH3_vect) {
 	static int32_t sSampleAccumulator;
 	static uint16_t sCountdown = SAMPLES_AVERAGED;
@@ -334,8 +320,9 @@ ISR(ADCA_CH3_vect) {
 	}
 	
 } /* ISR(ADCA_CH3_vect) */
-
 static uint8_t ReadCalibrationByte(uint8_t index) {
+
+
 	uint8_t result;
 	
 	NVM.CMD = NVM_CMD_READ_CALIB_ROW_gc;
@@ -344,3 +331,21 @@ static uint8_t ReadCalibrationByte(uint8_t index) {
 	
 	return result;
 } /* ReadCalibrationByte */
+
+
+ISR(TCE0_OVF_vect)
+{
+    uint8_t raw = (PORTD.IN & PIN6_bm) ? 1 : 0;
+
+    if (raw == btn_last) {
+        if (btn_cnt < DEBOUNCE_PERIOD_MS) btn_cnt++;
+    } else {
+        btn_cnt = 0;
+        btn_last = raw;
+    }
+
+    if (btn_cnt == DEBOUNCE_PERIOD_MS && raw != btn_stable) {
+        btn_stable = raw;
+        if (raw == 0) button_event = 1;   // pressed
+    }
+}       
