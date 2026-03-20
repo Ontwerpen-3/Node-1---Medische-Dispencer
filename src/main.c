@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/eeprom.h>
@@ -53,6 +54,10 @@
 #define PORTA_ADCPINS		(PIN3_bm | PIN4_bm)
 #define PORTD_BRIDGEPOS		PIN0_bm
 #define PORTD_BRIDGENEG		PIN1_bm
+
+#define fall_thresh 0.4
+#define pickup_thresh 6
+#define COOLDOWN_SECONDS 2
 
 static volatile int32_t sAccumulatedSamples;
 static volatile uint8_t sReadPhase, sWritePhase;
@@ -86,13 +91,15 @@ volatile uint8_t  step_index = 0;
 volatile uint16_t steps_left = 0;
 
 /* ===== INSTELBARE WAARDES ===== */
-uint16_t rotation_angle = 75;   // graden
-uint16_t wait_time_sec  = 90;    // wachttijd
+uint16_t steps_for_rotation = 900; // <-- hoeveel stappen hij draait
 uint16_t step_speed     = 900;  // steps/sec
-
-static void InitAnalogADC(void);
-static void InitAnalogTimer(void);
-static uint8_t ReadCalibrationByte(uint8_t index);
+char feed_time_1[] = "16:32:00";   // <-- hier stel jij je tijd in
+char feed_time_2[] = "16:33:00";   // <-- hier stel jij je tijd in
+char feed_time_3[] = "16:34:00";   // <-- hier stel jij je tijd in
+volatile uint8_t fall_event = 0;
+volatile uint8_t pickup_event = 0;
+volatile double current_grams;
+uint8_t cooldown_sec = 0;
 
 /* ===== Step motor ===== */
 void step_motor(void)
@@ -130,6 +137,21 @@ void stepper_timer_init(uint16_t speed)
     TCC1.INTCTRLA = TC_OVFINTLVL_MED_gc;
 }
 
+void detect_events(void)
+{
+    if (current_grams > fall_thresh && fall_event == 0 && cooldown_sec == 0) {
+        fall_event = 1;
+        printf("medicatie gevallen, melding verstuurd naar de noodsieraad\n");
+    }
+    if (current_grams > pickup_thresh && fall_event == 1) {
+        pickup_event = 1;
+        fall_event = 0;
+
+        cooldown_sec = COOLDOWN_SECONDS;
+        
+        printf("medicatie is gepakt\n");
+    }
+}
 /* ===== 1 seconde ISR → TCD0 ===== */
 ISR(TCD0_OVF_vect)
 {
@@ -152,11 +174,9 @@ ISR(TCC1_OVF_vect)
 
 
 int main(void) {
-
 	
     char t[9]  = "HH:MM:SS";
     char d[11] = "DD-MM-YY";
-
 	
 	PORTD.OUTSET = PORTD_BRIDGEPOS;
 	PORTD.OUTCLR = PORTD_BRIDGENEG;
@@ -195,7 +215,6 @@ int main(void) {
 
     printf("RTC + Stepper Dispenser gestart...\r\n");
 
-    uint16_t counter = 0;
 
     while(1)  {
         if (sReadPhase != sWritePhase)	{
@@ -213,29 +232,56 @@ int main(void) {
 		char buf_avg[12], buf_grams[12];
         dtostrf(avg,   7, 3, buf_avg);
         dtostrf(grams, 7, 3, buf_grams);
+        current_grams = grams;
 
         printf(">raw:%ld,avg:%s,grams:%s\r\n",
             newVal,
             buf_avg,
             buf_grams);
     }
+
+    detect_events();
+
     if (button_event) {
         button_event = 0;
+        fall_event = 0;
         tare = last_grams;
         printf("\r\nTARE %.3f\r\n", tare);
-    }	
+    }
+
 	if(one_second_flag) {
         one_second_flag = 0;
 
+    if (cooldown_sec > 0) {
+    cooldown_sec--;
+    }
         rtc_get_time(&TWIE);
         rtc_get_date(&TWIE);
 
-        printf("%s  %s\r\n", rtc_date_to_string(d), rtc_time_to_string(t));
-        counter++;
-            counter = 0;
-            steps_left = (uint32_t)rotation_angle * 4096 / 360;
+    char *current_time = rtc_time_to_string(t);
+
+    printf("%s  %s\r\n", rtc_date_to_string(d), current_time);
+
+    static uint8_t triggered = 0;
+
+    if (
+        strncmp(current_time, feed_time_1, 8) == 0 ||
+        strncmp(current_time, feed_time_2, 8) == 0 ||
+        strncmp(current_time, feed_time_3, 8) == 0
+    )
+    {
+        if (!triggered) {
+            steps_left = steps_for_rotation;
+            triggered = 1;
+            printf("FEED!\r\n");
         }
-	}	
+    }
+    else {
+        triggered = 0;
+        }
+    }
+}	
+
 
 } /* main */
 
@@ -275,6 +321,7 @@ static void InitAnalogADC(void) {
 	PMIC.CTRL |= PMIC_HILVLEN_bm; /* Enable hi-level interrupt (ADC completion) */
 
 } /* InitAnalogADC */
+
 static void InitAnalogTimer(void) {
 	
 	TCC0.CTRLB = TC_WGMODE_NORMAL_gc;
@@ -290,6 +337,7 @@ static void InitAnalogTimer(void) {
 	EVSYS.CH0MUX = EVSYS_CHMUX_TCC0_OVF_gc; /* Connect TCC0 overflow to event channel 0, thus triggering an ADC sweep */
 	
 } /* InitAnalogTimer */
+
 ISR(ADCA_CH3_vect) {
 	static int32_t sSampleAccumulator;
 	static uint16_t sCountdown = SAMPLES_AVERAGED;
@@ -320,6 +368,7 @@ ISR(ADCA_CH3_vect) {
 	}
 	
 } /* ISR(ADCA_CH3_vect) */
+
 static uint8_t ReadCalibrationByte(uint8_t index) {
 
 
