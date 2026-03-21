@@ -1,41 +1,6 @@
-/*
- * SmartSensors_loadcelldemo.c
- *
- * Created: 3/21/2022 5:34:21 PM
- *  Author: bakker
- */ 
+
 
 #define F_CPU				32000000UL
-#define SAMPLERATE			10000UL
-#define SAMPLERATE_OUT		3UL
-#define TICKS_PER_SAMPLE	(F_CPU / SAMPLERATE)
-#define SAMPLES_AVERAGED	(SAMPLERATE / SAMPLERATE_OUT)
-#define CHANNELS_AVERAGED	4U
-#define AVERAGING_GAIN		((uint32_t) SAMPLES_AVERAGED * CHANNELS_AVERAGED)
-
-#define BRIDGE_DRIVE_V		3.3
-#define BRIDGE_SENS_V_PER_G	(BRIDGE_DRIVE_V * 1e-6)
-#define AMP_GAIN			898.25
-#define ADC_FS_V			(3.3/2)
-#define ADC_RANGE_LSB		2048
-#define ADC_V_PER_LSB		(ADC_FS_V / ADC_RANGE_LSB)
-#define GRAM_PER_LSB		(ADC_V_PER_LSB / (BRIDGE_SENS_V_PER_G * AMP_GAIN))
-
-#define OFFSET 1.23
-
-#define BAUD_100K 100000UL
-
-#define DEBOUNCE_PERIOD_MS 50
-
-/* ===== STEPPER ===== */
-#define STEPPER_PORT PORTA
-
-#define IN1 PIN0_bm
-#define IN2 PIN1_bm
-#define IN3 PIN2_bm
-#define IN4 PIN5_bm
-
-#define STEPPER_MASK (IN1 | IN2 | IN3 | IN4)
 
 #include <stdio.h>
 #include <stddef.h>
@@ -50,32 +15,222 @@
 #include "serialF0.h"
 #include "i2c.h"
 #include "rtc.h"
+#include "nrf24spiXM2.h"
+#include "nrf24L01.h"
 
-#define PORTA_ADCPINS		(PIN3_bm | PIN4_bm)
-#define PORTD_BRIDGEPOS		PIN0_bm
-#define PORTD_BRIDGENEG		PIN1_bm
+#define SAMPLERATE			10000UL
+#define SAMPLERATE_OUT		3UL
+#define TICKS_PER_SAMPLE	(F_CPU / SAMPLERATE)
+#define SAMPLES_AVERAGED	(SAMPLERATE / SAMPLERATE_OUT)
+#define CHANNELS_AVERAGED	4U
+#define AVERAGING_GAIN		((uint32_t) SAMPLES_AVERAGED * CHANNELS_AVERAGED)
+
+#define BRIDGE_DRIVE_V		3.3
+#define BRIDGE_SENS_V_PER_G	(BRIDGE_DRIVE_V * 1e-6)
+#define AMP_GAIN			898.25
+#define ADC_FS_V			(3.3/2)
+#define ADC_RANGE_LSB		2048
+#define ADC_V_PER_LSB		(ADC_FS_V / ADC_RANGE_LSB)
+
+#define GRAM_PER_LSB		(ADC_V_PER_LSB / (BRIDGE_SENS_V_PER_G * AMP_GAIN))
+#define OFFSET 1.23
 
 #define fall_thresh 0.4
 #define pickup_thresh 6
 #define COOLDOWN_SECONDS 2
 
+#define BAUD_100K 100000UL
+#define PACKET_TYPE_RTC 1
+
+#define DEBOUNCE_PERIOD_MS 50
+
+#define PORTA_ADCPINS		(PIN3_bm | PIN4_bm)
+#define PORTD_BRIDGEPOS		PIN0_bm
+#define PORTD_BRIDGENEG		PIN1_bm
+
+#define STEPPER_PORT PORTA
+
+#define IN1 PIN0_bm
+#define IN2 PIN1_bm
+#define IN3 PIN2_bm
+#define IN4 PIN5_bm
+
+#define STEPPER_MASK (IN1 | IN2 | IN3 | IN4)
+
+#define ALERT_DELAY_SEC (30 * 60)  
+
+volatile uint16_t alert_timer = 0;
+volatile uint8_t alert_active = 0;
+
 static volatile int32_t sAccumulatedSamples;
 static volatile uint8_t sReadPhase, sWritePhase;
 
-volatile uint8_t one_second_flag = 0;
-
-/* Tare */
-static volatile double tare = 0.0;
+volatile double current_grams;
 static volatile double last_grams = 0.0;
+double prev_grams = 0;
+
+volatile uint8_t one_second_flag = 0;
+volatile uint8_t fall_event = 0;
+volatile uint8_t pickup_event = 0;
+
+uint8_t cooldown_sec = 0;
+
+static volatile double tare = 0.0;
+
+uint8_t Pipe_RTC[5]  = "RTC01";
+
+volatile uint8_t nrf_rx_flag = 0;
+uint8_t nrf_rx_buf[32];
+
 
 volatile uint8_t button_event = 0;
 volatile uint8_t btn_last = 1, btn_stable = 1, btn_cnt = 0;
+
+volatile uint8_t  step_index = 0;
+volatile uint16_t steps_left = 0;
+
+/* ===== INSTELBARE WAARDES ===== */
+uint16_t steps_for_rotation = 900; // <-- hoeveel stappen hij draait
+uint16_t step_speed     = 900;  // steps/sec
+char feed_time_1[] = "16:32:00";   // <-- hier stel jij je tijd in
+char feed_time_2[] = "16:33:00";   // <-- hier stel jij je tijd in
+char feed_time_3[] = "16:34:00";   // <-- hier stel jij je tijd in
 
 static void InitAnalogADC(void);
 static void InitAnalogTimer(void);
 static uint8_t ReadCalibrationByte(uint8_t index);
 
-/* Half-step sequence */
+typedef struct
+{
+    uint8_t packet_type;
+
+    uint8_t second;
+    uint8_t minute;
+    uint8_t hour;
+
+    uint8_t day;
+    uint8_t month;
+    uint16_t year;
+} rtc_packet_t;
+void detect_events(void)
+{
+    // FALL = van laag → naar hoog
+   if (prev_grams < fall_thresh && current_grams > fall_thresh)
+{
+    if (cooldown_sec == 0)
+    {
+        printf("medicatie gevallen\n");
+
+        alert_active = 1;
+        alert_timer = 0;
+
+        cooldown_sec = COOLDOWN_SECONDS;
+    }
+}
+
+    // PICKUP = van hoog → naar laag
+    if (prev_grams > pickup_thresh && current_grams < pickup_thresh)
+    {
+        printf("medicatie is gepakt\n");
+        alert_active = 0;   // stop timer
+    }
+
+    prev_grams = current_grams;
+}
+
+void update_weight(void)
+{
+    if (sReadPhase != sWritePhase)
+    {
+        int32_t newVal = sAccumulatedSamples;
+        sReadPhase = sWritePhase;
+
+        double avg = (double)newVal / AVERAGING_GAIN;
+        double grams_raw = avg * GRAM_PER_LSB;
+        double grams = (grams_raw - tare) * OFFSET;
+
+        current_grams = grams;
+        last_grams = grams_raw;
+
+        detect_events();
+
+        printf(">raw:%ld,avg:%.3f,grams:%.3f\r\n",
+               newVal, avg, grams);
+    }
+}
+
+void send_time_packet(void)
+{
+    rtc_packet_t pkt;
+
+    pkt.packet_type = PACKET_TYPE_RTC;
+
+    pkt.second = rtc_time.second;
+    pkt.minute = rtc_time.minute;
+    pkt.hour   = rtc_time.hour;
+
+    pkt.day    = rtc_date.day;
+    pkt.month  = rtc_date.month;
+    pkt.year   = rtc_date.year;
+
+    nrfOpenWritingPipe(Pipe_RTC);
+    nrfWrite((uint8_t*)&pkt, sizeof(pkt));
+
+    printf("SEND %02d:%02d:%02d\n",
+    pkt.hour,
+    pkt.minute,
+    pkt.second);
+}
+
+void handle_time(void)
+{
+    if (!one_second_flag) return;
+
+    one_second_flag = 0;
+
+    if (cooldown_sec > 0)
+        cooldown_sec--;
+
+    rtc_get_time(&TWIE);
+    rtc_get_date(&TWIE);
+
+    send_time_packet();
+}
+
+void handle_button(void)
+{
+    if (button_event)
+    {
+        button_event = 0;
+        fall_event = 0;
+        tare = last_grams;
+
+        printf("\r\nTARE %.3f\r\n", tare);
+    }
+}
+
+void nrf_init_custom(void)
+{
+    nrfspiInit();
+    nrfBegin();
+
+    nrfSetChannel(101);
+    nrfSetPALevel(NRF_RF_SETUP_PWR_6DBM_gc);
+    nrfSetDataRate(NRF_RF_SETUP_RF_DR_250K_gc);
+
+    nrfSetAutoAck(0); // broadcast → geen ACK nodig
+    nrfEnableDynamicPayloads();
+
+    nrfClearInterruptBits();
+    nrfFlushRx();
+    nrfFlushTx();
+
+    // standaard pipe (wordt later gewisseld)
+    nrfOpenWritingPipe(Pipe_RTC);
+    nrfStopListening();  
+    nrfPowerUp();
+}
+
 uint8_t steps[8] = {
     IN1,
     IN1 | IN2,
@@ -87,21 +242,6 @@ uint8_t steps[8] = {
     IN4 | IN1
 };
 
-volatile uint8_t  step_index = 0;
-volatile uint16_t steps_left = 0;
-
-/* ===== INSTELBARE WAARDES ===== */
-uint16_t steps_for_rotation = 900; // <-- hoeveel stappen hij draait
-uint16_t step_speed     = 900;  // steps/sec
-char feed_time_1[] = "16:32:00";   // <-- hier stel jij je tijd in
-char feed_time_2[] = "16:33:00";   // <-- hier stel jij je tijd in
-char feed_time_3[] = "16:34:00";   // <-- hier stel jij je tijd in
-volatile uint8_t fall_event = 0;
-volatile uint8_t pickup_event = 0;
-volatile double current_grams;
-uint8_t cooldown_sec = 0;
-
-/* ===== Step motor ===== */
 void step_motor(void)
 {
     STEPPER_PORT.OUT =
@@ -118,7 +258,6 @@ void debounce_timer_init(void)
     TCE0.CTRLA = TC_CLKSEL_DIV64_gc;
 }
 
-/* ===== 1 seconde timer → TCD0 (TCC0 is al in gebruik door ADC!) ===== */
 void timer_init(void)
 {
     TCD0.PER = 31249;
@@ -126,7 +265,6 @@ void timer_init(void)
     TCD0.CTRLA = TC_CLKSEL_DIV1024_gc;
 }
 
-/* ===== Stepper timer ===== */
 void stepper_timer_init(uint16_t speed)
 {
     uint32_t timer_clk = F_CPU / 64;
@@ -137,28 +275,25 @@ void stepper_timer_init(uint16_t speed)
     TCC1.INTCTRLA = TC_OVFINTLVL_MED_gc;
 }
 
-void detect_events(void)
+ISR(NRF24_IRQ_VEC)
 {
-    if (current_grams > fall_thresh && fall_event == 0 && cooldown_sec == 0) {
-        fall_event = 1;
-        printf("medicatie gevallen, melding verstuurd naar de noodsieraad\n");
-    }
-    if (current_grams > pickup_thresh && fall_event == 1) {
-        pickup_event = 1;
-        fall_event = 0;
+    uint8_t tx_ds, max_rt, rx_dr;
 
-        cooldown_sec = COOLDOWN_SECONDS;
-        
-        printf("medicatie is gepakt\n");
+    nrfWhatHappened(&tx_ds, &max_rt, &rx_dr);
+
+    if (rx_dr) {
+        uint8_t len = nrfGetDynamicPayloadSize();
+        nrfRead(nrf_rx_buf, len);
+        nrf_rx_buf[len] = '\0';
+        nrf_rx_flag = 1;
     }
 }
-/* ===== 1 seconde ISR → TCD0 ===== */
+
 ISR(TCD0_OVF_vect)
 {
     one_second_flag = 1;
 }
 
-/* ===== Stepper ISR ===== */
 ISR(TCC1_OVF_vect)
 {
     if(steps_left > 0)
@@ -191,7 +326,9 @@ int main(void) {
 	InitAnalogADC();
 	InitAnalogTimer();
 
-	    i2c_init(&TWIE, TWI_BAUD(F_CPU, BAUD_100K));
+	i2c_init(&TWIE, TWI_BAUD(F_CPU, BAUD_100K));
+
+    nrf_init_custom();
 
     PORTE.DIRCLR = PIN1_bm | PIN0_bm;
     PORTE.PIN0CTRL = PORT_OPC_PULLUP_gc;
@@ -217,46 +354,39 @@ int main(void) {
 
 
     while(1)  {
-        if (sReadPhase != sWritePhase)	{
-		/* Busy-wait; normally we do have other things to do */
-		int32_t newVal = sAccumulatedSamples;
-		sReadPhase = sWritePhase;
 
-        double avg = (double) newVal / AVERAGING_GAIN;
-		double grams_raw = avg * GRAM_PER_LSB;
-        double grams = (grams_raw - tare) * OFFSET;
+        update_weight();   // sensor + events
 
+        handle_button();   // input
 
-		last_grams = grams_raw;
-        
-		char buf_avg[12], buf_grams[12];
-        dtostrf(avg,   7, 3, buf_avg);
-        dtostrf(grams, 7, 3, buf_grams);
-        current_grams = grams;
-
-        printf(">raw:%ld,avg:%s,grams:%s\r\n",
-            newVal,
-            buf_avg,
-            buf_grams);
-    }
-
-    detect_events();
-
-    if (button_event) {
-        button_event = 0;
-        fall_event = 0;
-        tare = last_grams;
-        printf("\r\nTARE %.3f\r\n", tare);
-    }
+   
 
 	if(one_second_flag) {
         one_second_flag = 0;
+        if (alert_active)
+{
+    if (alert_timer < ALERT_DELAY_SEC)
+    {
+        alert_timer++;
+    }
+    else
+    {
+        if (current_grams > fall_thresh)
+        {
+            printf("30 min later: medicatie ligt nog!\n");
+        }
+
+        alert_active = 0;
+    }
+}
 
     if (cooldown_sec > 0) {
     cooldown_sec--;
     }
         rtc_get_time(&TWIE);
         rtc_get_date(&TWIE);
+
+        send_time_packet();
 
     char *current_time = rtc_time_to_string(t);
 
