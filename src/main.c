@@ -92,9 +92,9 @@ volatile uint16_t steps_left = 0;
 /* ===== INSTELBARE WAARDES ===== */
 uint16_t steps_for_rotation = 900; // <-- hoeveel stappen hij draait
 uint16_t step_speed     = 900;  // steps/sec
-char feed_time_1[] = "16:32:00";   // <-- hier stel jij je tijd in
-char feed_time_2[] = "16:33:00";   // <-- hier stel jij je tijd in
-char feed_time_3[] = "16:34:00";   // <-- hier stel jij je tijd in
+char feed_time_1[] = "11:51:00";   // <-- hier stel jij je tijd in
+char feed_time_2[] = "11:52:00";   // <-- hier stel jij je tijd in
+char feed_time_3[] = "11:53:00";   // <-- hier stel jij je tijd in
 
 static void InitAnalogADC(void);
 static void InitAnalogTimer(void);
