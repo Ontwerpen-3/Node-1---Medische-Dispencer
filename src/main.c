@@ -80,7 +80,6 @@ uint8_t cooldown_sec = 0;
 
 static volatile float tare = 0.0f;
 
-/* ÉÉN gedeelde pipe voor deze node: RTC + medicatie */
 uint8_t Pipe_NODE1[5] = "NOD01";
 
 volatile uint8_t nrf_rx_flag = 0;
