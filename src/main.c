@@ -6,7 +6,6 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
-#include <util/delay.h>
 
 #include "clock.h"
 #include "serialF0.h"
@@ -38,12 +37,6 @@
 #define COOLDOWN_SECONDS    2U
 
 #define BAUD_100K           100000UL
-#define PACKET_TYPE_RTC     0x01U
-#define PACKET_TYPE_MEDICATION_DROP 0x04U
-
-#define MED_EVENT_FALL      1U
-#define MED_EVENT_TIMEOUT   2U
-#define MED_EVENT_PICKUP    3U
 
 #define DEBOUNCE_PERIOD_MS  50U
 
@@ -52,13 +45,6 @@
 #define PORTD_BRIDGENEG     PIN1_bm
 
 #define STEPPER_PORT        PORTA
-
-#define IN1                 PIN0_bm
-#define IN2                 PIN1_bm
-#define IN3                 PIN2_bm
-#define IN4                 PIN5_bm
-
-#define STEPPER_MASK        (IN1 | IN2 | IN3 | IN4)
 
 #define ALERT_DELAY_SEC     60U
 
@@ -110,12 +96,6 @@ const uint8_t steps[8] =
     IN4,
     IN4 | IN1
 };
-
-ISR(ADCA_CH3_vect);
-ISR(TCE0_OVF_vect);
-ISR(TCD0_OVF_vect);
-ISR(TCC1_OVF_vect);
-ISR(NRF24_IRQ_VEC);
 
 int main(void)
 {
@@ -215,7 +195,6 @@ int main(void)
         }
     }
 }
-
 
 ISR(ADCA_CH3_vect)
 {

@@ -6,7 +6,6 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
-#include <util/delay.h>
 
 #include "clock.h"
 #include "serialF0.h"
@@ -14,6 +13,7 @@
 #include "rtc.h"
 #include "nrf24spiXM2.h"
 #include "nrf24L01.h"
+#include "functies.h"
 
 #define SAMPLERATE          10000UL
 #define SAMPLERATE_OUT      3UL
@@ -35,21 +35,8 @@
 #define PICKUP_THRESH       6.0f
 #define COOLDOWN_SECONDS    2U
 
-#define PACKET_TYPE_RTC     0x01U
-#define PACKET_TYPE_MEDICATION_DROP 0x04U
-
-#define MED_EVENT_FALL      1U
-#define MED_EVENT_TIMEOUT   2U
-#define MED_EVENT_PICKUP    3U
-
 #define PORTA_ADCPINS       (PIN3_bm | PIN4_bm)
 #define STEPPER_PORT        PORTA
-#define STEPPER_MASK        (IN1 | IN2 | IN3 | IN4)
-
-#define IN1                 PIN0_bm
-#define IN2                 PIN1_bm
-#define IN3                 PIN2_bm
-#define IN4                 PIN5_bm
 
 extern volatile uint16_t alert_timer;
 extern volatile uint8_t alert_active;
@@ -67,27 +54,9 @@ extern volatile uint8_t button_event;
 extern volatile uint8_t step_index;
 extern const uint8_t steps[8];
 
-typedef struct __attribute__((packed))
-{
-    uint8_t packet_type;
-    uint8_t second;
-    uint8_t minute;
-    uint8_t hour;
-    uint8_t day;
-    uint8_t month;
-    uint16_t year;
-} rtc_packet_t;
+static uint8_t ReadCalibrationByte(uint8_t index);
 
-typedef struct __attribute__((packed))
-{
-    uint8_t packet_type;
-    uint8_t medication_status;
-} medication_drop_packet_t;
-
-uint8_t ReadCalibrationByte(uint8_t index);
-void send_medication_drop(uint8_t medication_status);
-
-uint8_t ReadCalibrationByte(uint8_t index)
+static uint8_t ReadCalibrationByte(uint8_t index)
 {
     uint8_t result;
 
